@@ -1,0 +1,9 @@
+n_classes: 5
+n_epochs: 2
+steps_per_epoch: 2
+target_list:
+- cyto
+- mito
+- nucleus
+- other
+- secreted
