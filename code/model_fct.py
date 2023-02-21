@@ -8,7 +8,8 @@ import pandas as pd
 import pytorch_lightning as pl
 import torchmetrics
 from transformers import BertModel, BertTokenizer, AdamW, get_linear_schedule_with_warmup
-from torchmetrics.classification import MulticlassAUROC, MulticlassAccuracy,MultilabelAccuracy
+from torchmetrics.classification import MulticlassAUROC, MulticlassAccuracy,MultilabelAccuracy, MultilabelF1Score
+from torchmetrics import Recall, Precision
 from tqdm.auto import tqdm
 from datetime import datetime
 from collections import OrderedDict
@@ -101,13 +102,18 @@ class ProteinClassifier(pl.LightningModule):
         #check for the parameters of the linear layer
         self.classifier = nn.Sequential(#nn.Dropout(p=0.2),
                                         nn.Linear(self.bert.config.hidden_size, n_classes),
-                                        nn.Tanh())
+                                        nn.Tanh()
+                                        #nn.Softmax()
+        )
         
         self.target_list = target_list
         self.steps_per_epoch = steps_per_epoch
         self.n_epochs = n_epochs
         self.criterion = nn.CrossEntropyLoss()
         self.metric_acc = MultilabelAccuracy(num_labels=5)
+        self.metric_f1 = MultilabelF1Score(num_labels=5)
+        self.metric_precision = Precision(task="multilabel", average='macro', num_labels=5)
+        self.metric_recall = Recall("multilabel", average='macro', num_labels=5)
         self.save_hyperparameters()
         
     def forward(self, input_ids, attention_mask, targets=None):
@@ -125,17 +131,27 @@ class ProteinClassifier(pl.LightningModule):
         input_ids = batch["input_ids"]
         attention_mask = batch["attention_mask"]
         targets = batch["targets"]
-        loss, outputs = self(input_ids, attention_mask, targets)
         
+        loss, outputs = self(input_ids, attention_mask, targets)
         self.log("train_loss", loss, prog_bar=True, logger=True)
         
-        val_acc = self.metric_acc(outputs, targets)
-
+        #training_acc = self.metric_acc(outputs, targets)
+        self.log("training_acc", self.metric_acc(outputs, targets), on_step=False, on_epoch=True)
+        
+        #training_f1 = self.metric_f1(outputs, targets)
+        self.log('training_f1', self.metric_f1(outputs, targets), on_step=False, on_epoch=True)
+        
+        #training_recall = self.metric_recall(outputs, targets)
+        self.log('training_recall', self.metric_recall(outputs, targets), on_step=False, on_epoch=True)
+        
+        #training_precision = self.metric_precision(outputs, targets)
+        self.log('training_precision', self.metric_precision(outputs, targets), on_step=False, on_epoch=True)
+        
         return OrderedDict({
             "loss": loss,
             "predictions": outputs,
             "targets": targets,
-            "val_acc": val_acc
+            #"training_acc": training_acc
         })
     
 
@@ -146,35 +162,56 @@ class ProteinClassifier(pl.LightningModule):
         targets = batch["targets"]
         
         loss, outputs = self(input_ids, attention_mask, targets)
-        
         self.log("val_loss", loss, prog_bar=True, logger=True)
 
-        val_acc = self.metric_acc(outputs, targets)
-        self.log('val_acc', val_acc, on_step=False, on_epoch=True)
+        #val_acc = self.metric_acc(outputs, targets)
+        self.log('val_acc', self.metric_acc(outputs, targets), on_step=False, on_epoch=True)
+        
+        #val_f1 = self.metric_f1(outputs, targets)
+        self.log('val_f1', self.metric_f1(outputs, targets), on_step=False, on_epoch=True)
+        
+        #val_recall = self.metric_recall(outputs, targets)
+        self.log('val_recall', self.metric_recall(outputs, targets), on_step=False, on_epoch=True)
+        
+        #val_precision = self.metric_precision(outputs, targets)
+        self.log('val_precision', self.metric_precision(outputs, targets), on_step=False, on_epoch=True)
 
         return OrderedDict({
             "val_loss": loss,
             "predictions": outputs,
             "targets": targets,
-            "val_acc": val_acc
+            #"val_acc": val_acc,
+            #'val_f1':val_f1,
+            #'val_recall':val_recall,
+            #'val_precision':val_precision
         })
     
-    def validation_epoch_end(self, outputs):
+    #def validation_epoch_end(self, outputs):
 
         
-        val_loss_mean = torch.stack([x['val_loss'] for x in outputs]).mean()
-        val_acc_mean = torch.stack([x['val_acc'] for x in outputs]).mean()
+        #val_loss_mean = torch.stack([x['val_loss'] for x in outputs]).mean()
+        #val_acc_mean = torch.stack([x['val_acc'] for x in outputs]).mean()
+        #val_f1_mean = torch.stack([x['val_f1'] for x in outputs]).mean()
+        #val_precision_mean = torch.stack([x['val_recall'] for x in outputs]).mean()
+        #val_recall_mean = torch.stack([x['val_precision'] for x in outputs]).mean()
 
-        tqdm_dict = {"val_loss": val_loss_mean, "val_acc": val_acc_mean}
+       
+        #tqdm_dict = {"val_loss": val_loss_mean, 
+                     #"val_acc": val_acc_mean
+                     #'val_f1':val_f1,
+                     #'val_recall':val_recall,
+                     #'val_precision':val_precision
+                    #}
         
-        result = {
-            "progress_bar": tqdm_dict,
-            "log": tqdm_dict,
-            "val_loss": val_loss_mean,
-        }
-        return result
+        #result = {
+            #"progress_bar": tqdm_dict,
+            ##"log": tqdm_dict,
+            #"val_loss": val_loss_mean,
+        #}
+        #return result
         
     def test_step(self, batch, batch_idx):
+        
         input_ids = batch["input_ids"]
         attention_mask = batch["attention_mask"]
         targets = batch["targets"]
@@ -182,29 +219,51 @@ class ProteinClassifier(pl.LightningModule):
         loss, outputs = self(input_ids, attention_mask, targets)
         self.log("test_loss", loss, prog_bar=True, logger=True)
         
-        val_acc = self.metric_acc(outputs, targets)
-        self.log("val_acc", val_acc, prog_bar=True, logger=True)
+        #test_acc = self.metric_acc(outputs, targets)
+        self.log("test_acc", self.metric_acc(outputs, targets), on_step=False, on_epoch=True)
+        
+        #test_f1 = self.metric_f1(outputs, targets)
+        self.log('test_f1', self.metric_f1(outputs, targets), on_step=False, on_epoch=True)
+        
+        #test_recall = self.metric_recall(outputs, targets)
+        self.log('test_recall', self.metric_recall(outputs, targets), on_step=False, on_epoch=True)
+        
+        #test_precision = self.metric_precision(outputs, targets)
+        self.log('test_precision', self.metric_precision(outputs, targets), on_step=False, on_epoch=True)
 
         return OrderedDict({
-            "val_loss": loss,
+            "test_loss": loss,
             "predictions": outputs,
             "targets": targets,
-            "val_acc": val_acc
+            #"test_acc": test_acc,
+            #'test_f1':test_f1,
+            #'test_recall':test_recall,
+            #'test_precision':test_precision
         })
     
-    def testing_epoch_end(self, outputs):
+    #def testing_epoch_end(self, outputs):
 
         
-        test_loss_mean = torch.stack([x['test_loss'] for x in outputs]).mean()
-        test_acc_mean = torch.stack([x['test_acc'] for x in outputs]).mean()
+        #test_loss_mean = torch.stack([x['test_loss'] for x in outputs]).mean()
+        #test_acc_mean = torch.stack([x['test_acc'] for x in outputs]).mean()
+        #test_f1_mean = torch.stack([x['test_f1'] for x in outputs]).mean()
+        #test_precision_mean = torch.stack([x['test_recall'] for x in outputs]).mean()
+        #test_recall_mean = torch.stack([x['test_precision'] for x in outputs]).mean()
 
-        tqdm_dict = {"test_loss": test_loss_mean, "test_acc": test_acc_mean}
-        result = {
-            "progress_bar": tqdm_dict,
-            "log": tqdm_dict,
-            "test_loss": test_loss_mean,
-        }
-        return result
+       
+        #tqdm_dict = {"test_loss": test_loss_mean, 
+                     #"test_acc": test_acc_mean
+                     #'test_f1':test_f1,
+                     #'test_recall':test_recall,
+                     #'test_precision':test_precision
+                    #}
+        
+        #result = {
+            #"progress_bar": tqdm_dict,
+            #"log": tqdm_dict,
+            #"test_loss": test_loss_mean,
+        #}
+        #return result
     
     def configure_optimizers(self):
         
