@@ -8,19 +8,23 @@ import pandas as pd
 import pytorch_lightning as pl
 import torchmetrics
 from transformers import BertModel, BertTokenizer, AdamW, get_linear_schedule_with_warmup
-from torchmetrics.classification import MulticlassAUROC, MulticlassAccuracy,MultilabelAccuracy, MultilabelF1Score
-from torchmetrics import Recall, Precision
+from torchmetrics.classification import MulticlassAUROC, MulticlassAccuracy,MulticlassAccuracy, MulticlassF1Score
+from torchmetrics import Recall, Precision, ConfusionMatrix
 from tqdm.auto import tqdm
 from datetime import datetime
 from collections import OrderedDict
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+from sklearn.metrics import confusion_matrix, classification_report, precision_recall_fscore_support
 
 #from pytorch_lightning.metrics.sklearns import Accuracy
 
 target_list = ['cyto', 'mito', 'nucleus','other', 'secreted']
+num_samples = [3004,1604,1299,3014,2002]
+
 #PRE_TRAINED_MODEL_NAME = 'Rostlab/prot_bert_bfd_localization'
 PRE_TRAINED_MODEL_NAME = 'Rostlab/prot_bert_bfd'
 tokenizer = BertTokenizer.from_pretrained(PRE_TRAINED_MODEL_NAME, do_lower_case=False)
-EPOCHS = 2
+EPOCHS = 1
 BATCH_SIZE = 1
 MAX_LENGTH = 1500
 
@@ -77,6 +81,7 @@ class ProteinDataModule(pl.LightningDataModule):
     def setup(self, stage=None):
         self.train_dataset = ProteinSequenceDataset(self.train_df, self.tokenizer,self.target_list, self.max_len)
         self.test_dataset = ProteinSequenceDataset(self.test_df, self.tokenizer,self.target_list, self.max_len)
+       
         self.val_dataset = ProteinSequenceDataset(self.val_df, self.tokenizer,self.target_list, self.max_len)
         self.blind_dataset = ProteinSequenceDataset(self.blind_df, self.tokenizer,self.target_list, self.max_len)
 
@@ -99,28 +104,29 @@ class ProteinClassifier(pl.LightningModule):
         super().__init__()
 
         self.bert = BertModel.from_pretrained(PRE_TRAINED_MODEL_NAME)
-        #check for the parameters of the linear layer
-        self.classifier = nn.Sequential(#nn.Dropout(p=0.2),
-                                        nn.Linear(self.bert.config.hidden_size, n_classes),
-                                        nn.Tanh()
-                                        #nn.Softmax()
+        self.classifier = nn.Sequential(nn.Linear(self.bert.config.hidden_size, n_classes),
+                                        nn.Softmax()
         )
-        
+        self.n_classes = n_classes
         self.target_list = target_list
         self.steps_per_epoch = steps_per_epoch
         self.n_epochs = n_epochs
         self.criterion = nn.CrossEntropyLoss()
-        self.metric_acc = MultilabelAccuracy(num_labels=5)
-        self.metric_f1 = MultilabelF1Score(num_labels=5)
-        self.metric_precision = Precision(task="multilabel", average='macro', num_labels=5)
-        self.metric_recall = Recall("multilabel", average='macro', num_labels=5)
+        
+        self.val_targets = []
+        self.val_preds = []
+        
+        self.test_targets = []
+        self.test_preds = []
+
+        
         self.save_hyperparameters()
         
     def forward(self, input_ids, attention_mask, targets=None):
         
         output = self.bert(input_ids, attention_mask=attention_mask)
         output = self.classifier(output.pooler_output)
-        output = torch.sigmoid(output)
+
         
         loss = 0
         if targets is not None:
@@ -131,27 +137,13 @@ class ProteinClassifier(pl.LightningModule):
         input_ids = batch["input_ids"]
         attention_mask = batch["attention_mask"]
         targets = batch["targets"]
-        
         loss, outputs = self(input_ids, attention_mask, targets)
         self.log("train_loss", loss, prog_bar=True, logger=True)
-        
-        #training_acc = self.metric_acc(outputs, targets)
-        self.log("training_acc", self.metric_acc(outputs, targets), on_step=False, on_epoch=True)
-        
-        #training_f1 = self.metric_f1(outputs, targets)
-        self.log('training_f1', self.metric_f1(outputs, targets), on_step=False, on_epoch=True)
-        
-        #training_recall = self.metric_recall(outputs, targets)
-        self.log('training_recall', self.metric_recall(outputs, targets), on_step=False, on_epoch=True)
-        
-        #training_precision = self.metric_precision(outputs, targets)
-        self.log('training_precision', self.metric_precision(outputs, targets), on_step=False, on_epoch=True)
-        
+
         return OrderedDict({
             "loss": loss,
             "predictions": outputs,
-            "targets": targets,
-            #"training_acc": training_acc
+            "targets": targets
         })
     
 
@@ -163,52 +155,19 @@ class ProteinClassifier(pl.LightningModule):
         
         loss, outputs = self(input_ids, attention_mask, targets)
         self.log("val_loss", loss, prog_bar=True, logger=True)
-
-        #val_acc = self.metric_acc(outputs, targets)
-        self.log('val_acc', self.metric_acc(outputs, targets), on_step=False, on_epoch=True)
         
-        #val_f1 = self.metric_f1(outputs, targets)
-        self.log('val_f1', self.metric_f1(outputs, targets), on_step=False, on_epoch=True)
+        outputs = torch.argmax(outputs, dim=1)
+        targets = torch.argmax(targets, dim=1)
         
-        #val_recall = self.metric_recall(outputs, targets)
-        self.log('val_recall', self.metric_recall(outputs, targets), on_step=False, on_epoch=True)
-        
-        #val_precision = self.metric_precision(outputs, targets)
-        self.log('val_precision', self.metric_precision(outputs, targets), on_step=False, on_epoch=True)
+        self.val_targets.append(targets.detach().cpu().numpy())
+        self.val_preds.append(outputs.detach().cpu().numpy())
 
         return OrderedDict({
             "val_loss": loss,
             "predictions": outputs,
-            "targets": targets,
-            #"val_acc": val_acc,
-            #'val_f1':val_f1,
-            #'val_recall':val_recall,
-            #'val_precision':val_precision
+            "targets": targets
         })
     
-    #def validation_epoch_end(self, outputs):
-
-        
-        #val_loss_mean = torch.stack([x['val_loss'] for x in outputs]).mean()
-        #val_acc_mean = torch.stack([x['val_acc'] for x in outputs]).mean()
-        #val_f1_mean = torch.stack([x['val_f1'] for x in outputs]).mean()
-        #val_precision_mean = torch.stack([x['val_recall'] for x in outputs]).mean()
-        #val_recall_mean = torch.stack([x['val_precision'] for x in outputs]).mean()
-
-       
-        #tqdm_dict = {"val_loss": val_loss_mean, 
-                     #"val_acc": val_acc_mean
-                     #'val_f1':val_f1,
-                     #'val_recall':val_recall,
-                     #'val_precision':val_precision
-                    #}
-        
-        #result = {
-            #"progress_bar": tqdm_dict,
-            ##"log": tqdm_dict,
-            #"val_loss": val_loss_mean,
-        #}
-        #return result
         
     def test_step(self, batch, batch_idx):
         
@@ -217,54 +176,107 @@ class ProteinClassifier(pl.LightningModule):
         targets = batch["targets"]
         
         loss, outputs = self(input_ids, attention_mask, targets)
-        self.log("test_loss", loss, prog_bar=True, logger=True)
+        print(outputs)
+        outputs = torch.argmax(outputs, dim=1)
+        targets = torch.argmax(targets, dim=1)
         
-        #test_acc = self.metric_acc(outputs, targets)
-        self.log("test_acc", self.metric_acc(outputs, targets), on_step=False, on_epoch=True)
-        
-        #test_f1 = self.metric_f1(outputs, targets)
-        self.log('test_f1', self.metric_f1(outputs, targets), on_step=False, on_epoch=True)
-        
-        #test_recall = self.metric_recall(outputs, targets)
-        self.log('test_recall', self.metric_recall(outputs, targets), on_step=False, on_epoch=True)
-        
-        #test_precision = self.metric_precision(outputs, targets)
-        self.log('test_precision', self.metric_precision(outputs, targets), on_step=False, on_epoch=True)
+        self.test_targets.append(targets.detach().cpu().numpy())
+        self.test_preds.append(outputs.detach().cpu().numpy())
+
 
         return OrderedDict({
             "test_loss": loss,
             "predictions": outputs,
-            "targets": targets,
-            #"test_acc": test_acc,
-            #'test_f1':test_f1,
-            #'test_recall':test_recall,
-            #'test_precision':test_precision
+            "targets": targets
         })
     
-    #def testing_epoch_end(self, outputs):
-
+    def validation_epoch_end(self, outputs):
+        val_targets = np.concatenate(self.val_targets)
+        val_preds = np.concatenate(self.val_preds)
         
-        #test_loss_mean = torch.stack([x['test_loss'] for x in outputs]).mean()
-        #test_acc_mean = torch.stack([x['test_acc'] for x in outputs]).mean()
-        #test_f1_mean = torch.stack([x['test_f1'] for x in outputs]).mean()
-        #test_precision_mean = torch.stack([x['test_recall'] for x in outputs]).mean()
-        #test_recall_mean = torch.stack([x['test_precision'] for x in outputs]).mean()
+        df = pd.DataFrame({'target': val_targets, 'prediction': val_preds})
 
-       
-        #tqdm_dict = {"test_loss": test_loss_mean, 
-                     #"test_acc": test_acc_mean
-                     #'test_f1':test_f1,
-                     #'test_recall':test_recall,
-                     #'test_precision':test_precision
-                    #}
+        # compute global metrics
+        accuracy = accuracy_score(df['target'], df['prediction'])
+        precision = precision_score(df['target'], df['prediction'], average='macro')
+        recall = recall_score(df['target'], df['prediction'], average='macro')
+        f1 = f1_score(df['target'], df['prediction'], average='macro')
+
+        print(f"the accuracy is {accuracy:.2f}")
+        print(f"the precision is {precision:.2f}")
+        print(f"the recall is {recall:.2f}")
+        print(f"the f1 is {f1:.2f}")
+
+        cm = confusion_matrix(val_targets, val_preds)
+
+        # compute total number of samples for each class
+        total_per_class = np.sum(cm, axis=1)
+
+        # compute number of correctly classified samples for each class
+        correct_per_class = np.diagonal(cm)
+
+        # compute precision, recall, and f1 score for each class
+        p, r, f1, _ = precision_recall_fscore_support(val_targets, val_preds, average=None)
+
+        # compute accuracy for each class
+        accuracy_per_class = np.divide(correct_per_class, total_per_class, where=total_per_class!=0)
+
+        # create a dataframe to hold the results
+        df_class = pd.DataFrame({
+            'precision': p,
+            'recall': r,
+            'f1': f1,
+            'accuracy': accuracy_per_class,
+            'num_samples': total_per_class
+        })
+
+        print(df_class)
+        print(cm)
         
-        #result = {
-            #"progress_bar": tqdm_dict,
-            #"log": tqdm_dict,
-            #"test_loss": test_loss_mean,
-        #}
-        #return result
-    
+    def test_epoch_end(self, outputs):
+        
+        test_targets = np.concatenate(self.test_targets)
+        test_preds = np.concatenate(self.test_preds)
+        
+        df = pd.DataFrame({'target': test_targets, 'prediction': test_preds})
+
+        # compute global metrics
+        accuracy = accuracy_score(df['target'], df['prediction'])
+        precision = precision_score(df['target'], df['prediction'], average='macro')
+        recall = recall_score(df['target'], df['prediction'], average='macro')
+        f1 = f1_score(df['target'], df['prediction'], average='macro')
+
+        print(f"the accuracy is {accuracy:.2f}")
+        print(f"the precision is {precision:.2f}")
+        print(f"the recall is {recall:.2f}")
+        print(f"the f1 is {f1:.2f}")
+
+        cm = confusion_matrix(test_targets, test_preds)
+
+        # compute total number of samples for each class
+        total_per_class = np.sum(cm, axis=1)
+
+        # compute number of correctly classified samples for each class
+        correct_per_class = np.diagonal(cm)
+
+        # compute precision, recall, and f1 score for each class
+        p, r, f1, _ = precision_recall_fscore_support(test_targets, test_preds, average=None)
+
+        # compute accuracy for each class
+        accuracy_per_class = np.divide(correct_per_class, total_per_class, where=total_per_class!=0)
+
+        # create a dataframe to hold the results
+        df_class = pd.DataFrame({
+            'precision': p,
+            'recall': r,
+            'f1': f1,
+            'accuracy': accuracy_per_class,
+            'num_samples': total_per_class
+        })
+
+        print(df_class)
+        print(cm)
+        
     def configure_optimizers(self):
         
         parameters = [
@@ -275,9 +287,6 @@ class ProteinClassifier(pl.LightningModule):
             },
         ]
         optimizer = AdamW(parameters, lr=2e-5)
-        #warmup_steps = self.steps_per_epoch // 3
-        #total_steps = self.steps_per_epoch * self.n_epochs - warmup_steps
-        #scheduler = get_linear_schedule_with_warmup(optimizer, warmup_steps, total_steps)
         return [optimizer], []
     
     def predict_step(self, batch,batch_idx):
