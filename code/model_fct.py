@@ -24,7 +24,7 @@ num_samples = [3004,1604,1299,3014,2002]
 #PRE_TRAINED_MODEL_NAME = 'Rostlab/prot_bert_bfd_localization'
 PRE_TRAINED_MODEL_NAME = 'Rostlab/prot_bert_bfd'
 tokenizer = BertTokenizer.from_pretrained(PRE_TRAINED_MODEL_NAME, do_lower_case=False)
-EPOCHS = 1
+EPOCHS = 3
 BATCH_SIZE = 1
 MAX_LENGTH = 1500
 
@@ -176,7 +176,7 @@ class ProteinClassifier(pl.LightningModule):
         targets = batch["targets"]
         
         loss, outputs = self(input_ids, attention_mask, targets)
-        print(outputs)
+        #print(outputs)
         outputs = torch.argmax(outputs, dim=1)
         targets = torch.argmax(targets, dim=1)
         
